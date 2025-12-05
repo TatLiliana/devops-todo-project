@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: php-todo-api
+  namespace: php-todo-app
+  labels:
+    app: php-todo-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: php-todo-api
+  template:
+    metadata:
+      labels:
+        app: php-todo-api
+    spec:
+      containers:
+      - name: php-todo-api
+        image: php-todo-api:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+          name: http
+        env:
+        - name: DB_HOST
+          value: "mysql"
+        - name: DB_PORT
+          value: "3306"
+        - name: DB_DATABASE
+          value: "todoapp"
+        - name: DB_USERNAME
+          value: "todouser"
+        - name: DB_PASSWORD
+          value: "todopass"
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"

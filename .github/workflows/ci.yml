@@ -1,0 +1,155 @@
+# CI Pipeline - Continuous Integration
+# Trigger: Push vagy Pull Request a main/develop branch-ekre
+# Funkció: PHP 8.2 és 8.3 tesztelés, Docker image build
+
+name: CI - Build and Test
+
+on:
+  pull_request:
+    branches: [ main, develop ]  # PR-ek main vagy develop branch-re
+  push:
+    branches: [ main, develop ]  # Push main vagy develop branch-re
+
+jobs:
+  # Job 1: PHP tesztelés (matrix strategy: 8.2 és 8.3 párhuzamosan)
+  test:
+    name: Test on PHP ${{ matrix.php-version }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        php-version: ['8.2', '8.3']  # Két PHP verzió párhuzamos tesztelése
+
+    # MySQL service konténer indítása a tesztekhez
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: rootpass
+          MYSQL_DATABASE: todoapp
+          MYSQL_USER: todouser
+          MYSQL_PASSWORD: todopass
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      # Step 1: Repository klónozása
+      - name: Kód letöltése
+        uses: actions/checkout@v4
+
+      # Step 2: PHP környezet beállítása a matrix verzióval (8.2 vagy 8.3)
+      - name: PHP telepítése ${{ matrix.php-version }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          extensions: mbstring, pdo_mysql, bcmath, gd  # Szükséges PHP extensionök
+          coverage: none  # Code coverage nem szükséges
+
+      # Step 3: PHP beépített web szerver indítása háttérben
+      - name: PHP beépített szerver indítása
+        run: |
+          php -S localhost:8000 -t public &  # Háttérben fut (&)
+          sleep 2  # Várunk 2 másodpercet az indulásra
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_DATABASE: todoapp
+          DB_USERNAME: todouser
+          DB_PASSWORD: todopass
+
+      # Step 4: MySQL service elérhetőségének várakozása
+      - name: MySQL várakozás
+        run: |
+          for i in {1..30}; do  # Maximum 30 próbálkozás (60 másodperc)
+            if mysqladmin ping -h 127.0.0.1 -u todouser -ptodopass --silent; then
+              echo "MySQL is ready"
+              break
+            fi
+            echo "Waiting for MySQL..."
+            sleep 2
+          done
+
+      # Step 5: Health check endpoint tesztelése
+      - name: API Health Endpoint tesztelése
+        run: |
+          response=$(curl -s http://localhost:8000/api/health)
+          echo "Health check response: $response"
+          if echo "$response" | grep -q "healthy"; then
+            echo "Health check passed"
+          else
+            echo "Health check failed"
+            exit 1  # Hiba esetén pipeline leállítása
+          fi
+
+      # Step 6: Összes API endpoint tesztelése
+      - name: API Endpointok tesztelése
+        run: |
+          # Gyökér endpoint teszt
+          curl -f http://localhost:8000/api || exit 1
+
+          # Metrics endpoint teszt
+          curl -f http://localhost:8000/api/metrics || exit 1
+
+          # Todos lista teszt
+          curl -f http://localhost:8000/api/todos || exit 1
+
+          echo "All API tests passed"
+
+  # Job 2: Docker image build és tesztelés
+  # Csak akkor fut, ha a test job sikeresen befejeződött
+  build:
+    name: Docker Image Build
+    runs-on: ubuntu-latest
+    needs: test  # Függ a test job-tól (csak ha az sikeres)
+
+    steps:
+      # Step 1: Repository klónozása
+      - name: Kód letöltése
+        uses: actions/checkout@v4
+
+      # Step 2: Docker Buildx beállítása (multi-platform build támogatás)
+      - name: Docker Buildx beállítása
+        uses: docker/setup-buildx-action@v3
+
+      # Step 3: Docker image build (GitHub Actions cache-sel)
+      - name: Docker image build
+        uses: docker/build-push-action@v5
+        with:
+          context: .  # Dockerfile a projekt gyökerében van
+          push: false  # Nem push-oljuk Docker Hub-ra (csak CI)
+          load: true  # Betöltjük a local Docker registry-be
+          tags: devops-todo-project:test  # Test tag
+          cache-from: type=gha  # GitHub Actions cache használata
+          cache-to: type=gha,mode=max  # Cache mentése következő futáshoz
+
+      # Step 4: Docker image működésének tesztelése
+      - name: Docker image tesztelése
+        run: |
+          # Image létezésének ellenőrzése
+          docker images | grep devops-todo-project || exit 1
+
+          # Container indítása test módban
+          docker run -d --name test-app -p 8001:80 \
+            -e DB_HOST=mysql \
+            -e DB_DATABASE=todoapp \
+            -e DB_USERNAME=todouser \
+            -e DB_PASSWORD=todopass \
+            devops-todo-project:test
+
+          sleep 5  # Várunk a container indulására
+
+          # Container futásának ellenőrzése
+          if [ "$(docker ps -q -f name=test-app)" ]; then
+            echo "Docker container started successfully"
+            docker stop test-app
+            docker rm test-app
+          else
+            echo "Docker container failed to start"
+            docker logs test-app  # Hiba logok kiírása
+            exit 1
+          fi
