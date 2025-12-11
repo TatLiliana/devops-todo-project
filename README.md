@@ -557,3 +557,5 @@ MIT License - Oktatási célokra készült projekt
 **Projekt célja:** Modern DevOps gyakorlatok bemutatása egy egyszerű, de teljes körű TODO alkalmazáson keresztül, Laravel nélkül, tisztán PHP-ban.
 
 <!-- Develop branch teszt módosítás -->
+
+<!-- Main branch teszt módosítás -->
